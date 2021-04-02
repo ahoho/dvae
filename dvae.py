@@ -35,30 +35,6 @@ class CollapsedMultinomial(dist.Multinomial):
         return ((self.probs + 1e-10).log() * value).sum(-1)
 
 
-class L1RegularizedTraceMeanField_ELBO(TraceMeanField_ELBO):
-    def __init__(self, *args, l1_params=None, l1_weight=1., **kwargs):
-        super().__init__(*args, **kwargs)
-        assert all(p in pyro.get_param_store().keys() for p in l1_params)
-        self.l1_params = l1_params
-        self.l1_weight = l1_weight
-
-    @staticmethod
-    def l1_regularize(params, weight):
-        params = torch.cat([pyro.params(p).view(-1) for p in params])
-        return weight * torch.norm(params, 1)
-
-
-    def loss_and_grads(self, model, guide, *args, **kwargs):
-        loss_standard = self.differentiable_loss(model, guide, *args, **kwargs)
-        loss = loss_standard + self.l1_regularize(self.l1_params, self.l1_weight)
-
-        loss.backward()
-        loss = loss.item()
-
-        pyro.util.warn_if_nan(loss, "loss")
-        return loss
-
-
 class Encoder(nn.Module):
     """
     Module that parameterizes the dirichlet distribution q(z|x)
@@ -193,6 +169,7 @@ class DVAE(nn.Module):
     ) -> torch.tensor:
         # register PyTorch module `decoder` with Pyro
         pyro.module("decoder", self.decoder)
+
         with pyro.plate("data", x.shape[0]):
             # setup hyperparameters for prior p(z)
             alpha_0 = torch.ones(
@@ -274,7 +251,6 @@ def run_dvae(
         alpha_prior: float = 0.01,
 
         learning_rate: float = 0.001,
-        beta_regularization: Optional[float] = None, 
         adam_beta_1: float = 0.9,
         adam_beta_2: float = 0.999,
         batch_size: int = 200,
@@ -348,8 +324,6 @@ def run_dvae(
 
     # setup the inference algorithm
     elbo = JitTraceMeanField_ELBO() if jit else TraceMeanField_ELBO()
-    if beta_regularization:
-        elbo = L1RegularizedTraceMeanField_ELBO()
     svi = SVI(vae.model, vae.guide, optimizer, loss=elbo)
 
     train_elbo = []
