@@ -26,6 +26,29 @@ logger = logging.getLogger(__name__)
 app = typer.Typer()
 
 
+class L1RegularizedTraceMeanField_ELBO(TraceMeanField_ELBO):
+    def __init__(self, *args, l1_params=None, l1_weight=1., **kwargs):
+        super().__init__(*args, **kwargs)
+        self.l1_params = l1_params
+        self.l1_weight = l1_weight
+
+    @staticmethod
+    def l1_regularize(param_names, weight):
+        params = torch.cat([pyro.param(p).view(-1) for p in param_names])
+        return weight * torch.norm(params, 1)
+
+
+    def loss_and_grads(self, model, guide, *args, **kwargs):
+        loss_standard = self.differentiable_loss(model, guide, *args, **kwargs)
+        loss = loss_standard + self.l1_regularize(self.l1_params, self.l1_weight)
+
+        loss.backward()
+        loss = loss.item()
+
+        pyro.util.warn_if_nan(loss, "loss")
+        return loss
+
+
 class CollapsedMultinomial(dist.Multinomial):
     """
     Equivalent to n separate `MultinomialProbs(probs, 1)`, where `self.log_prob` treats each
@@ -323,7 +346,11 @@ def run_dvae(
     optimizer = Adam(adam_args)
 
     # setup the inference algorithm
-    elbo = JitTraceMeanField_ELBO() if jit else TraceMeanField_ELBO()
+    if topic_word_regularization:
+        elbo = L1RegularizedTraceMeanField_ELBO(
+            l1_params=["decoder$$$eta_layer.weight", "decoder$$$eta_layer.bias"],
+            l1_weight=topic_word_regularization
+        )
     svi = SVI(vae.model, vae.guide, optimizer, loss=elbo)
 
     train_elbo = []
