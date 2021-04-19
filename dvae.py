@@ -274,6 +274,7 @@ def run_dvae(
         alpha_prior: float = 0.01,
 
         learning_rate: float = 0.001,
+        topic_word_regularization: Optional[float] = None, 
         adam_beta_1: float = 0.9,
         adam_beta_2: float = 0.999,
         batch_size: int = 200,
