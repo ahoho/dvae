@@ -314,7 +314,7 @@ def run_dvae(
     if eval_path is not None:
         x_val = load_sparse(eval_path).astype(np.float32)
         if not compute_eval_loss and not to_dense:
-            x_val = x_val.to_csc() # slight speedup 
+            x_val = x_val.tocsc() # slight speedup 
         if to_dense:
             x_val = x_val.toarray()
     else:
