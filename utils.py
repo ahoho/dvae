@@ -94,7 +94,7 @@ def compute_npmi(sorted_topics: np.ndarray, bin_ref_counts: np.ndarray, n: int =
                 c1 = col1.sum()
                 c2 = col2.sum()
                 if sparse.issparse(bin_ref_counts):
-                    c12 = c1.multiply(c2).sum()
+                    c12 = col1.multiply(col2).sum()
                 else:
                     c12 = (col1 * col2).sum()
 
