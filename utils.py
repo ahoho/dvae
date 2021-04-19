@@ -6,13 +6,8 @@ import numpy as np
 from scipy import sparse
 
 
-def load_sparse(input_filename: Union[Path, str]) -> sparse.coo_matrix:
-    npy = np.load(input_filename)
-    coo_matrix = sparse.coo_matrix(
-        (npy['data'], (npy['row'], npy['col'])), shape=npy['shape']
-    )
-    return coo_matrix.tocsr()
-
+def load_sparse(input_fname):
+    return sparse.load_npz(input_fname).tocsr()
 
 def load_json(fpath: Union[Path, str]) -> Any:
     with open(fpath) as infile:
