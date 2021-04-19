@@ -347,6 +347,7 @@ def run_dvae(
     optimizer = Adam(adam_args)
 
     # setup the inference algorithm
+    elbo = TraceMeanField_ELBO()
     if topic_word_regularization:
         elbo = L1RegularizedTraceMeanField_ELBO(
             l1_params=["decoder$$$eta_layer.weight", "decoder$$$eta_layer.bias"],
