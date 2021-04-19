@@ -146,13 +146,50 @@ def compute_topic_exclusivity(beta, n=20):
     raise NotImplementedError()
 
 
-def compute_topic_overlap(topics, word_overlap_threshold=10, n=10):
+def compute_to(topics, n=10, multiplier=2, return_overlaps=False):
     """
-    Calculate topic overlap (number of unique topic pairs sharing words)
+    A sensible overlap / redundancy measure. Words from a topic
+    are only counted once per "edge"
+
+    Basic algorithm creates a de-duplicated adjacency matrix:
+    for each topic A_i, sorted by total number of overlaps:
+        create set of sets S = {S_{ij} = A_i \cap A_j st. j=i+1,...,k}
+        sort sets in S by their cardinality in descending order
+        initialize a set W = {}
+        For each S_{ij}' in S:
+            if words are not already part of an edge, i.e., |W \cap S_{ij}'| is 0:
+               create an edge between A_i and A_j with weight w = |S_{ij}'|
+               augment the list of words used in an edge, W = W \cup S_{ij}'
+    
+    Then, sum the number of edges, weighted by some function of that number
     """
-    overlapping_topics = set()
-    for i, t_i in enumerate(topics):
-        for j, t_j in enumerate(topics[i+1:], start=i+1):
-            if len(set(t_i[:n]) & set(t_j[:n])) >= word_overlap_threshold:
-                overlapping_topics |= set([i, j])
-    return len(overlapping_topics)
+    k = len(topics)
+    overlap_counts = np.zeros((k, k), dtype=int)
+    overlap_dedup = np.zeros((k, k), dtype=int)
+    overlap_words = {}
+
+    # first count all the overlaps between topics
+    for i, topic_i in enumerate(topics):
+        for j, topic_j in enumerate(topics[i+1:], start=i+1):
+            words_ij = set(topic_i[:n]) & set(topic_j[:n])
+            overlap_counts[[i, j], [j, i]] = len(words_ij)
+            overlap_words[frozenset([i, j])] = words_ij
+
+    # sort topics by those with most overlaps
+    sort_idx = overlap_counts.sum(0).argsort()[::-1]
+    overlap_counts = overlap_counts[sort_idx, :][:, sort_idx]
+    for i, counts in enumerate(overlap_counts):
+        counted_words = set()
+        start = i + 1
+        for j in (counts[start:].argsort()[::-1] + start):
+            words_ij = overlap_words[frozenset([i, j])]
+            if overlap_counts[i, j] > 0 and len(counted_words & words_ij) == 0:
+                overlap_dedup[i, j] = overlap_counts[i, j]
+                counted_words |= words_ij
+
+    # how many 1-word n-topic overlaps are equivalent to an n-word 1-topic overlap?
+    increments = np.linspace(1/multiplier, n, num=n)
+    redundancy = increments[overlap_dedup[overlap_dedup > 0] - 1].sum() / (n * (k - 1))
+    if return_overlaps:
+        redundancy = redundancy, overlap_dedup
+    return redundancy

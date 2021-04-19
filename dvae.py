@@ -19,7 +19,7 @@ import pyro.distributions as dist
 from pyro.infer import SVI, TraceMeanField_ELBO, JitTraceMeanField_ELBO
 from pyro.optim import Adam
 
-from utils import compute_npmi, compute_topic_overlap, compute_tu, load_sparse, load_json, save_topics
+from utils import NPMI, compute_to, compute_tu, load_json, save_topics, load_sparse
 
 logger = logging.getLogger(__name__)
 
@@ -411,19 +411,24 @@ def run_dvae(
                     val_loss += svi.evaluate_loss(x_batch, bn_af, kl_af)
                 val_loss /= n_val
 
-            # get npmi
+            # get beta and topic terms
             beta = vae.decoder.beta
-
-            # topic-uniqueness & topic overlap
             topic_terms = np.flip(beta.argsort(-1), -1)[:, :topic_words_to_save]
+
+            # compute topic-uniqueness & topic overlap
+            to, overlaps = compute_to(topic_terms, n=eval_words, return_overlaps=True)
+            n_overlaps = np.sum(overlaps == eval_words)
+
             curr_metrics =  {
                 "val_loss": val_loss,
                 "npmi": np.mean(npmi_scorer.compute_npmi(topic_terms, n=eval_words)),
                 "tu": np.mean(compute_tu(topic_terms, n=eval_words)),
-                "to": compute_topic_overlap(topic_terms, overlap_words, n=eval_words),
+                "to": to,
+                "entire_overlaps": n_overlaps,
+                "keep": n_overlaps <= max_acceptable_overlap,
             }
 
-            if val_metrics['to'] <= max_acceptable_overlap:
+            if curr_metrics["keep"]:
                 val_metrics['val_loss'] = min(curr_metrics['val_loss'], val_metrics['val_loss'])
                 val_metrics['npmi'] = max(curr_metrics['npmi'], val_metrics['npmi'])
                 val_metrics['tu'] = max(curr_metrics['tu'], val_metrics['tu'])
