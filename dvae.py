@@ -286,13 +286,12 @@ def run_dvae(
         topic_words_to_save: int = 50,
         target_metric: str = "npmi",
         compute_eval_loss: bool = False,
-        overlap_words: int = 10,
         max_acceptable_overlap: Optional[int] = None,
         eval_step: int = 1,
         
         seed: int = 42,
         gpu: bool = False,
-        jit: bool = True,
+        jit: bool = True, # currently not used since it's caused some crashes
     ) -> Tuple[DVAE, Dict[str, float]]:
 
     # clear param store
@@ -322,7 +321,6 @@ def run_dvae(
         x_val, n_val = x_train, n_train
 
     n_val = x_val.shape[0]
-
 
     # load the vocabulary
     vocab = load_json(vocab_path) if vocab_path else None
@@ -356,7 +354,7 @@ def run_dvae(
     svi = SVI(vae.model, vae.guide, optimizer, loss=elbo)
 
     train_elbo = []
-    results = []
+    results_path = Path(output_dir, "results.csv")
     val_metrics = {
         "val_loss": np.inf,
         "npmi": 0,
@@ -439,19 +437,26 @@ def run_dvae(
                 save_topics(topic_terms, vocab, Path(output_dir, "topics.txt"))
 
             result_message.update({k: v for k, v in curr_metrics.items()})
-            results.append(curr_metrics)
+            curr_metrics = pd.DataFrame(curr_metrics)
+            curr_metrics.to_csv(
+                results_path,
+                mode="w" if epoch == 0 else "a",
+                header=epoch == 0,
+                index=False,
+            )
 
         t.set_postfix(result_message)
 
-    if results:
-        results_df = pd.DataFrame(results)
-        results_df.to_csv(Path(output_dir, "results.csv"))
+    if results_path.exists():
+        results = pd.read_csv(Path(output_dir, "results.csv"))
+        results = results.loc[results.keep]
         print(
-            f"Best NPMI: {results_df.npmi.max():0.4f} @ {np.argmax(results_df.npmi)}\n"
-            f"Best TU @ this NPMI: {results_df.tu[np.argmax(results_df.npmi)]:0.4f}"
+            f"Best NPMI: {results.npmi.max():0.4f} @ {np.argmax(results.npmi)}\n"
+            f"Best TU @ this NPMI: {results.tu[np.argmax(results.npmi)]:0.4f}\n"
+            f"Best TO @ this NPMI: {results.to[np.argmax(results.npmi)]:0.4f}"
         )
 
-    return vae, val_metrics
+    return vae, results
 
 
 if __name__ == '__main__':
