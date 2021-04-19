@@ -30,6 +30,50 @@ def save_topics(sorted_topics, vocab, fpath, n=100):
             topic = [vocab[i] for i in v]
             outfile.write(" ".join(topic) + "\n")
 
+class NPMI:
+    def __init__(self, bin_ref_counts: Union[np.ndarray, sparse.spmatrix]):
+        assert bin_ref_counts.max() == 1
+        self.bin_ref_counts = bin_ref_counts
+        self.npmi_cache = {} # calculating NPMI is somewhat expensive, so we cache results
+
+    def compute_npmi(self, beta: np.ndarray, n: int = 10) -> np.ndarray:
+        """
+        Compute NPMI for an estimated beta (topic-word distribution) parameter using
+        binary co-occurence counts from a reference corpus
+        """
+        num_docs = self.bin_ref_counts.shape[0]
+        sorted_topics = np.flip(beta.argsort(-1), -1)[:, :n]
+
+        npmi_means = []
+        for indices in sorted_topics:
+            npmi_vals = []
+            for i, idx_i in enumerate(indices):
+                for idx_j in indices[i+1:]:
+                    ij = frozenset([idx_i, idx_j])
+                    try:
+                        npmi = self.npmi_cache[ij]
+                    except KeyError:
+                        col_i = self.bin_ref_counts[:, idx_i]
+                        col_j = self.bin_ref_counts[:, idx_j]
+                        c_i = col_i.sum()
+                        c_j = col_j.sum()
+                        if sparse.issparse(self.bin_ref_counts):
+                            c_ij = col_i.multiply(col_j).sum()
+                        else:
+                            c_ij = (col_i * col_j).sum()
+                        if c_ij == 0:
+                            npmi = 0.0
+                        else:
+                            npmi = (
+                                (np.log(num_docs) + np.log(c_ij) - np.log(c_i) - np.log(c_j)) 
+                                / (np.log(num_docs) - np.log(c_ij))
+                            )
+                        self.npmi_cache[ij] = npmi
+                    npmi_vals.append(npmi)
+            npmi_means.append(np.mean(npmi_vals))
+
+        return np.array(npmi_means)
+
 
 def compute_npmi(sorted_topics: np.ndarray, bin_ref_counts: np.ndarray, n: int = 10) -> np.ndarray:
     """

@@ -363,6 +363,7 @@ def run_dvae(
         "tu": 0,
         "to": 0,
     }
+    npmi_scorer = NPMI((x_val > 0).astype(int))
     if max_acceptable_overlap is None:
         max_acceptable_overlap = float("inf")
 
@@ -417,7 +418,7 @@ def run_dvae(
             topic_terms = np.flip(beta.argsort(-1), -1)[:, :topic_words_to_save]
             curr_metrics =  {
                 "val_loss": val_loss,
-                "npmi": np.mean(compute_npmi(topic_terms, (x_val > 0), n=eval_words)),
+                "npmi": np.mean(npmi_scorer.compute_npmi(topic_terms, n=eval_words)),
                 "tu": np.mean(compute_tu(topic_terms, n=eval_words)),
                 "to": compute_topic_overlap(topic_terms, overlap_words, n=eval_words),
             }
