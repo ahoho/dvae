@@ -26,25 +26,15 @@ logger = logging.getLogger(__name__)
 app = typer.Typer()
 
 
-class CollapsedMultinomial(dist.Multinomial):
-    """
-    Equivalent to n separate `MultinomialProbs(probs, 1)`, where `self.log_prob` treats each
-    element of `value` as an independent one-hot draw (instead of `MultinomialProbs(probs, n)`)
-    """
-    def log_prob(self, value: torch.tensor) -> torch.tensor:
-        return ((self.probs + 1e-10).log() * value).sum(-1)
-
-
 class L1RegularizedTraceMeanField_ELBO(TraceMeanField_ELBO):
     def __init__(self, *args, l1_params=None, l1_weight=1., **kwargs):
         super().__init__(*args, **kwargs)
-        assert all(p in pyro.get_param_store().keys() for p in l1_params)
         self.l1_params = l1_params
         self.l1_weight = l1_weight
 
     @staticmethod
-    def l1_regularize(params, weight):
-        params = torch.cat([pyro.params(p).view(-1) for p in params])
+    def l1_regularize(param_names, weight):
+        params = torch.cat([pyro.param(p).view(-1) for p in param_names])
         return weight * torch.norm(params, 1)
 
 
@@ -57,6 +47,15 @@ class L1RegularizedTraceMeanField_ELBO(TraceMeanField_ELBO):
 
         pyro.util.warn_if_nan(loss, "loss")
         return loss
+
+
+class CollapsedMultinomial(dist.Multinomial):
+    """
+    Equivalent to n separate `MultinomialProbs(probs, 1)`, where `self.log_prob` treats each
+    element of `value` as an independent one-hot draw (instead of `MultinomialProbs(probs, n)`)
+    """
+    def log_prob(self, value: torch.tensor) -> torch.tensor:
+        return ((self.probs + 1e-10).log() * value).sum(-1)
 
 
 class Encoder(nn.Module):
@@ -193,6 +192,7 @@ class DVAE(nn.Module):
     ) -> torch.tensor:
         # register PyTorch module `decoder` with Pyro
         pyro.module("decoder", self.decoder)
+
         with pyro.plate("data", x.shape[0]):
             # setup hyperparameters for prior p(z)
             alpha_0 = torch.ones(
@@ -274,7 +274,6 @@ def run_dvae(
         alpha_prior: float = 0.01,
 
         learning_rate: float = 0.001,
-        beta_regularization: Optional[float] = None, 
         adam_beta_1: float = 0.9,
         adam_beta_2: float = 0.999,
         batch_size: int = 200,
@@ -347,9 +346,11 @@ def run_dvae(
     optimizer = Adam(adam_args)
 
     # setup the inference algorithm
-    elbo = JitTraceMeanField_ELBO() if jit else TraceMeanField_ELBO()
-    if beta_regularization:
-        elbo = L1RegularizedTraceMeanField_ELBO()
+    if topic_word_regularization:
+        elbo = L1RegularizedTraceMeanField_ELBO(
+            l1_params=["decoder$$$eta_layer.weight", "decoder$$$eta_layer.bias"],
+            l1_weight=topic_word_regularization
+        )
     svi = SVI(vae.model, vae.guide, optimizer, loss=elbo)
 
     train_elbo = []
