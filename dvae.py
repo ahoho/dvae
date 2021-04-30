@@ -261,10 +261,11 @@ def data_iterator(
 
 @app.command(help="Run a Dirichlet-VAE (with pytorch)")
 def run_dvae(
-        train_path: Path,
-        output_dir: Path,
-        eval_path: Optional[Path] = None,
-        vocab_path: Optional[Path] = None,
+        input_dir: Optional[Path] = None,
+        output_dir: Path = None,
+        train_path: Path = "train.dtm.npz",
+        eval_path: Optional[Path] = "val.dtm.npz",
+        vocab_path: Optional[Path] = "vocab.json",
         num_topics: Optional[int] = None,
         to_dense: bool = True,
 
@@ -300,6 +301,14 @@ def run_dvae(
     pyro.set_rng_seed(seed)
     pyro.enable_validation(__debug__)
 
+    if input_dir is not None:
+        train_path = Path(input_dir,  train_path)
+        eval_path = Path(input_dir, eval_path)
+        vocab_path = Path(input_dir, vocab_path)
+
+    if output_dir is None:
+        raise ValueError("`output_dir` is not set")
+
     Path(output_dir).mkdir(exist_ok=True, parents=True)
 
     # load the data
@@ -324,6 +333,7 @@ def run_dvae(
 
     # load the vocabulary
     vocab = load_json(vocab_path) if vocab_path else None
+    inv_vocab = dict(zip(vocab.values(), vocab.keys()))
     
     # setup the VAE
     vae = DVAE(
@@ -419,10 +429,10 @@ def run_dvae(
 
             curr_metrics =  {
                 "val_loss": val_loss,
-                "npmi": np.mean(npmi_scorer.compute_npmi(topic_terms, n=eval_words)),
+                "npmi": np.mean(npmi_scorer.compute_npmi(topics=topic_terms, n=eval_words)),
                 "tu": np.mean(compute_tu(topic_terms, n=eval_words)),
                 "to": to,
-                "entire_overlaps": n_overlaps,
+                "complete_overlaps": n_overlaps,
                 "keep": n_overlaps <= max_acceptable_overlap,
             }
 
@@ -434,15 +444,14 @@ def run_dvae(
 
             if val_metrics[target_metric] == curr_metrics[target_metric]:
                 pyro.get_param_store().save(Path(output_dir, "model.pt"))
-                save_topics(topic_terms, vocab, Path(output_dir, "topics.txt"))
+                save_topics(topic_terms, inv_vocab, Path(output_dir, "topics.txt"))
 
             result_message.update({k: v for k, v in curr_metrics.items()})
-            curr_metrics = pd.DataFrame(curr_metrics)
+            curr_metrics = pd.DataFrame(curr_metrics, index=[epoch])
             curr_metrics.to_csv(
                 results_path,
                 mode="w" if epoch == 0 else "a",
                 header=epoch == 0,
-                index=False,
             )
 
         t.set_postfix(result_message)
@@ -464,88 +473,3 @@ if __name__ == '__main__':
     warnings.filterwarnings("ignore", message=".*torch.tensor results are registered as constants in the trace.*")
 
     app()
-    #assert pyro.__version__.startswith('1.4.0')
-    # parse command line arguments
-    # parser = configargparse.ArgParser(
-    #     description="parse args",
-    #     config_file_parser_class=configargparse.YAMLConfigFileParser
-    # )
-
-    # parser.add("-c", "--config", is_config_file=True, default=None)
-    # parser.add("--output_dir", required=True, default=None)
-    # parser.add("--temp_model_dir", default=None, help="Temporary model storage during run, when I/O bound")
-
-
-    # parser.add("--data_dir", default=None)
-    # parser.add("-i", "--counts_fpath", default="train.npz")
-    # parser.add("-v", "--vocab_fpath", default="train.vocab.json")
-    # parser.add("-d", "--val_counts_fpath", default="dev.npz")
-    # parser.add("--val_split", default=0.2, type=float)
-    
-    # parser.add("-k", "--num_topics", default=50, type=int)
-    
-    # parser.add("--encoder_hidden_dim", default=100, type=int)
-    # parser.add("--encoder_dropout", default=0.2, type=float)
-    # parser.add("--decoder_dropout", default=0.2, type=float)
-    # parser.add("--alpha_prior", default=0.02, type=float)
-    # parser.add("--pretrained_embeddings_dir", dest="pretrained_embeddings", default=None, help="directory containing vocab.json and vectors.npy")
-    # parser.add("--update_embeddings", action="store_true", default=False)
-    # parser.add("--second_hidden_layer", action="store_true", default=False)
-    
-    # parser.add('-lr', '--learning_rate', default=0.002, type=float)
-    # parser.add("-b", "--batch_size", default=200, type=int)
-    # parser.add("-n", '--num_epochs', default=101, type=int)
-    # parser.add("--annealing_epochs", default=50, type=int)
-    # parser.add("--minimum_annealing_factor", default=0.01, type=float)
-    
-    # parser.add("--eval_step", default=1, type=int)
-    # parser.add("--val_metric_target", default="npmi", choices=["npmi", "loss", "tu"])
-    # parser.add("--npmi_words", default=10, type=int)
-    # parser.add("--tu_words", default=10, type=int)
-
-    # parser.add("--run_seeds", default=[42], type=int, nargs="+", help="Seeds to use for each run")
-    # parser.add('--cuda', action='store_true', default=False, help='whether to use cuda')
-    # parser.add('--jit', action='store_true', default=False, help='whether to use PyTorch jit')
-    # args = parser.parse_args()
-
-    # # Filter two pyro warnings
-
-    # # Run for each seed
-    # base_output_dir = args.output_dir
-    # Path(base_output_dir).mkdir(exist_ok=True, parents=True)
-
-    # for i, seed in enumerate(args.run_seeds):
-    #     # make subdirectories for each run
-    #     args.seed = seed
-    #     output_dir = Path(base_output_dir, str(seed))
-    #     output_dir.mkdir(exist_ok=True, parents=True)
-    #     args.output_dir = str(output_dir)
-    
-    #     # train
-    #     print(f"\nOn run {i} of {len(args.run_seeds)}")
-    #     model, metrics = main(args)
-    
-    # # Aggregate results
-    # agg_run_results = []
-    # for seed in args.run_seeds:
-    #     output_dir = Path(base_output_dir, str(seed))
-    #     results = pd.read_csv(Path(output_dir, "results.csv"))
-    #     agg_run_results.append({
-    #         "seed": seed,
-    #         "best_npmi": np.max(results.val_npmi),
-    #         "best_npmi_epoch": np.argmax(results.val_npmi),
-    #         "best_tu_at_best_npmi": results.val_tu[np.argmax(results.val_npmi)],
-    #         "best_tu": np.max(results.val_tu),
-    #         "best_tu_epoch": np.argmax(results.val_tu),
-    #         "best_npmi_at_best_tu": results.val_npmi[np.argmax(results.val_tu)],
-    #     })
-
-    # agg_run_results_df = pd.DataFrame.from_records(agg_run_results)
-    # agg_run_results_df.to_csv(Path(base_output_dir, "run_results.csv"))
-    # print(
-    #     f"\n=== Results over {len(args.run_seeds)} runs ===\n"
-    #     f"Mean NPMI: "
-    #     f"{agg_run_results_df.best_npmi.mean():0.4f} ({agg_run_results_df.best_npmi.std():0.4f}) "
-    #     f"@ epoch {np.mean(agg_run_results_df.best_npmi_epoch):0.1f} / {args.num_epochs}\n"
-    #     f"Mean best TU @ best NPMI: {agg_run_results_df.best_tu_at_best_npmi.mean():0.4f}"
-    # )

@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Union, Any, List
+from typing import Union, Any, List, Dict
 
 import numpy as np
 from scipy import sparse
@@ -19,33 +19,63 @@ def save_json(obj: Any, fpath: Union[Path, str]):
         return json.dump(obj, outfile)
 
 
-def save_topics(sorted_topics, vocab, fpath, n=100):
+def save_topics(sorted_topics, inv_vocab, fpath, n=100):
     """
     Save topics to disk
     """
-    if not isinstance(vocab, np.ndarray):
-        vocab = np.array(vocab)
     with open(fpath, "w") as outfile:
-        for v in sorted_topics:
-            topic = [vocab[i] for i in v]
+        for topic_idx in sorted_topics:
+            topic = [inv_vocab[i] for i in topic_idx[:n]]
             outfile.write(" ".join(topic) + "\n")
 
+
 class NPMI:
-    def __init__(self, bin_ref_counts: Union[np.ndarray, sparse.spmatrix]):
+    def __init__(
+        self,
+        bin_ref_counts: Union[np.ndarray, sparse.spmatrix],
+        vocab: Dict[str, int] = None,
+    ):
         assert bin_ref_counts.max() == 1
         self.bin_ref_counts = bin_ref_counts
+        if sparse.issparse(self.bin_ref_counts):
+            self.bin_ref_counts = self.bin_ref_counts.tocsc()
         self.npmi_cache = {} # calculating NPMI is somewhat expensive, so we cache results
+        self.vocab = vocab
 
-    def compute_npmi(self, beta: np.ndarray, n: int = 10) -> np.ndarray:
+    def compute_npmi(
+        self,
+        beta: np.ndarray = None,
+        topics: Union[np.ndarray, List] = None,
+        vocab: Dict[str, int] = None,
+        n: int = 10
+    ) -> np.ndarray:
         """
         Compute NPMI for an estimated beta (topic-word distribution) parameter using
         binary co-occurence counts from a reference corpus
-        """
-        num_docs = self.bin_ref_counts.shape[0]
-        sorted_topics = np.flip(beta.argsort(-1), -1)[:, :n]
 
+        Supply `vocab` if the topics contain terms that first need to be mapped to indices
+        """
+        if beta is not None and topics is not None:
+            raise ValueError(
+                "Supply one of either `beta` (topic-word distribution array) "
+                "or `topics`, a list of index or word lists"
+            )
+        if vocab is None and any([isinstance(idx, str) for idx in topics[0][:n]]):
+            raise ValueError(
+                "If `topics` contains terms, not indices, you must supply a `vocab`"
+            )
+    
+        if beta is not None:
+            topics = np.flip(beta.argsort(-1), -1)[:, :n]
+        if topics is not None:
+            topics = [topic[:n] for topic in topics]
+        if vocab is not None:
+            assert(len(vocab) == self.bin_ref_counts.shape[1])
+            topics = [[vocab[w] for w in topic[:n]] for topic in topics]
+
+        num_docs = self.bin_ref_counts.shape[0]
         npmi_means = []
-        for indices in sorted_topics:
+        for indices in topics:
             npmi_vals = []
             for i, idx_i in enumerate(indices):
                 for idx_j in indices[i+1:]:
