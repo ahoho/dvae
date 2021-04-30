@@ -71,7 +71,7 @@ if __name__ == "__main__":
 
         run_dir = str(output_dir)
         if args.temp_output_dir:
-            run_dir = Path(args.temp_output_dir, output_dir.name)
+            run_dir = Path(args.temp_output_dir, str(np.random.randint(1000)))
     
         # train
         print(f"\nOn run {i+1} of {len(args.run_seeds)}")
@@ -107,6 +107,7 @@ if __name__ == "__main__":
 
         if args.temp_output_dir:
             shutil.copytree(run_dir, output_dir, dirs_exist_ok=True)
+            shutil.rmtree(run_dir)
     
     # Aggregate results
     agg_run_results = []
