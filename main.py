@@ -61,13 +61,16 @@ if __name__ == "__main__":
     # Filter two pyro warnings
 
     # Run for each seed
-    base_output_dir = args.output_dir
-    Path(base_output_dir).mkdir(exist_ok=True, parents=True)
+    base_output_dir = Path(args.output_dir)
+    base_output_dir.mkdir(exist_ok=True, parents=True)
 
     for i, seed in enumerate(args.run_seeds):
         # make subdirectories for each run
-        output_dir = Path(base_output_dir, str(seed))
-        output_dir.mkdir(exist_ok=True, parents=True)
+        if len(args.run_seeds) == 1:
+            output_dir = base_output_dir
+        else:
+            output_dir = Path(base_output_dir, str(seed))
+            output_dir.mkdir(exist_ok=True, parents=True)
 
         run_dir = str(output_dir)
         if args.temp_output_dir:
@@ -112,7 +115,10 @@ if __name__ == "__main__":
     # Aggregate results
     agg_run_results = []
     for seed in args.run_seeds:
-        output_dir = Path(base_output_dir, str(seed))
+        if len(args.run_seeds) == 1:
+            output_dir = base_output_dir
+        else:
+            output_dir = Path(base_output_dir, str(seed))
         results = pd.read_csv(Path(output_dir, "results.csv"))
         agg_run_results.append({
             "seed": seed,
