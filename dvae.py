@@ -289,6 +289,7 @@ def run_dvae(
         compute_eval_loss: bool = False,
         max_acceptable_overlap: Optional[int] = None,
         eval_step: int = 1,
+        save_all_topics: bool = True,
         
         seed: int = 42,
         gpu: bool = False,
@@ -310,6 +311,8 @@ def run_dvae(
         raise ValueError("`output_dir` is not set")
 
     Path(output_dir).mkdir(exist_ok=True, parents=True)
+    if save_all_topics:
+        Path(output_dir, "topics").mkdir(exist_ok=True, parents=True)
 
     # load the data
     x_train = load_sparse(train_path).astype(np.float32)
@@ -444,7 +447,7 @@ def run_dvae(
 
             if val_metrics[target_metric] == curr_metrics[target_metric]:
                 pyro.get_param_store().save(Path(output_dir, "model.pt"))
-                save_topics(topic_terms, inv_vocab, Path(output_dir, "topics.txt"))
+                save_topics(topic_terms, inv_vocab, Path(output_dir, "topics.txt"), n=topic_words_to_save)
 
             result_message.update({k: v for k, v in curr_metrics.items()})
             curr_metrics = pd.DataFrame(curr_metrics, index=[epoch])
@@ -453,6 +456,8 @@ def run_dvae(
                 mode="w" if epoch == 0 else "a",
                 header=epoch == 0,
             )
+            if save_all_topics:
+                save_topics(topic_terms, inv_vocab, Path(output_dir, f"topics/{i}.txt"))
 
         t.set_postfix(result_message)
 
