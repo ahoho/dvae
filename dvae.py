@@ -457,7 +457,7 @@ def run_dvae(
                 header=epoch == 0,
             )
             if save_all_topics:
-                save_topics(topic_terms, inv_vocab, Path(output_dir, f"topics/{i}.txt"))
+                save_topics(topic_terms, inv_vocab, Path(output_dir, f"topics/{epoch}.txt"))
 
         t.set_postfix(result_message)
 
