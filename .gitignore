@@ -2,6 +2,7 @@
 .vscode
 output
 tmp
+dvae-copy.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
