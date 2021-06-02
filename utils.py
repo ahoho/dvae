@@ -1,225 +1,120 @@
-import json
-from pathlib import Path
-from typing import Union, Any, List, Dict
+from typing import Optional, Tuple, Callable
 
 import numpy as np
-from scipy import sparse
+
+import jax
+from jax import random, lax, jit
+import jax.numpy as jnp
+
+from .utils import compute_npmi as _compute_npmi_numpy, load_sparse
 
 
-def load_sparse(input_fname):
-    return sparse.load_npz(input_fname).tocsr()
-
-def load_json(fpath: Union[Path, str]) -> Any:
-    with open(fpath) as infile:
-        return json.load(infile)
-
-
-def save_json(obj: Any, fpath: Union[Path, str]):
-    with open(fpath, "w") as outfile:
-        return json.dump(obj, outfile)
-
-
-def save_topics(sorted_topics, inv_vocab, fpath, n=100):
+def load_dataset(fpath, batch_size: Optional[int] = None, to_dense: bool = False) -> Tuple[Callable, Callable]:
     """
-    Save topics to disk
+    Create dataset initialization and loading functions---only necessary for training
+    data
     """
-    with open(fpath, "w") as outfile:
-        for topic_idx in sorted_topics:
-            topic = [inv_vocab[i] for i in topic_idx[:n]]
-            outfile.write(" ".join(topic) + "\n")
+    dtm = load_sparse(fpath)
+    num_records, vocab_size = dtm.shape
+    idxs = np.arange(num_records)
+    if not to_dense:
+        # We will construct the batch from the indices in `get_batch`, which limits
+        # memory use for large document-term matrices
+        dtm = dtm.tocsr()
+        max_toks = np.sum(dtm > 0, axis=1).max()
+        row = jnp.tile(jnp.arange(batch_size), [max_toks, 1]).T
+        col = np.zeros((num_records, max_toks), np.int32)
+        data = np.zeros((num_records, max_toks), np.int32)
+        for i in idxs:
+            doc = dtm[i]
+            toks = len(doc.indices)
+            # Use leading zeros since they'll be overwritten during `index_update`
+            # by the trailing data
+            col[i][-toks:] = doc.indices
+            data[i][-toks:] = doc.data
+    else:
+        dtm = jnp.array(dtm.toarray())
+
+    if not batch_size:
+        batch_size = num_records
+
+    def init(key: Optional[jnp.ndarray] = None):
+        idxs_shuffled = random.permutation(key, idxs) if key is not None else idxs
+        data_dict = {}
+        if not to_dense:
+            data_dict["col"] = jnp.array(col[idxs_shuffled])
+            data_dict["data"] = jnp.array(data[idxs_shuffled])
+
+        data_dict['idxs'] = jnp.array(idxs_shuffled)
+        return num_records // batch_size, data_dict
+
+    def get_batch(i, data_dict):
+        if not to_dense:
+            # Construct the batch from the indices
+            col = lax.dynamic_slice_in_dim(data_dict['col'], i * batch_size, batch_size)
+            data = lax.dynamic_slice_in_dim(data_dict['data'], i * batch_size, batch_size)
+            batch = jnp.zeros((batch_size, vocab_size))
+            return jax.ops.index_update(batch, jax.ops.index[row, col], data, indices_are_sorted=True)
+        else:
+            ret_idx = lax.dynamic_slice_in_dim(data_dict['idxs'], i * batch_size, batch_size)
+            return jnp.take(dtm, ret_idx, axis=0)
+
+    return init, get_batch
 
 
-class NPMI:
-    def __init__(
-        self,
-        bin_ref_counts: Union[np.ndarray, sparse.spmatrix],
-        vocab: Dict[str, int] = None,
-    ):
-        assert bin_ref_counts.max() == 1
-        self.bin_ref_counts = bin_ref_counts
-        if sparse.issparse(self.bin_ref_counts):
-            self.bin_ref_counts = self.bin_ref_counts.tocsc()
-        self.npmi_cache = {} # calculating NPMI is somewhat expensive, so we cache results
-        self.vocab = vocab
+def compute_npmi(sorted_topics, bin_ref_counts, n=10):
+    if isinstance(bin_ref_counts, jnp.ndarray):
+        return _compute_npmi_jax(sorted_topics, bin_ref_counts, n=n)
+    else:
+        return _compute_npmi_numpy(sorted_topics, bin_ref_counts, n=n)
 
-    def compute_npmi(
-        self,
-        beta: np.ndarray = None,
-        topics: Union[np.ndarray, List] = None,
-        vocab: Dict[str, int] = None,
-        n: int = 10
-    ) -> np.ndarray:
-        """
-        Compute NPMI for an estimated beta (topic-word distribution) parameter using
-        binary co-occurence counts from a reference corpus
-
-        Supply `vocab` if the topics contain terms that first need to be mapped to indices
-        """
-        if beta is not None and topics is not None:
-            raise ValueError(
-                "Supply one of either `beta` (topic-word distribution array) "
-                "or `topics`, a list of index or word lists"
-            )
-        if vocab is None and any([isinstance(idx, str) for idx in topics[0][:n]]):
-            raise ValueError(
-                "If `topics` contains terms, not indices, you must supply a `vocab`"
-            )
+@jax.partial(jit, static_argnums=(1,))
+def extract_top_words(beta: jnp.ndarray, n: int = 10):
+    num_topics, num_words = jnp.shape(beta)
     
-        if beta is not None:
-            topics = np.flip(beta.argsort(-1), -1)[:, :n]
-        if topics is not None:
-            topics = [topic[:n] for topic in topics]
-        if vocab is not None:
-            assert(len(vocab) == self.bin_ref_counts.shape[1])
-            topics = [[vocab[w] for w in topic[:n]] for topic in topics]
-
-        num_docs = self.bin_ref_counts.shape[0]
-        npmi_means = []
-        for indices in topics:
-            npmi_vals = []
-            for i, idx_i in enumerate(indices):
-                for idx_j in indices[i+1:]:
-                    ij = frozenset([idx_i, idx_j])
-                    try:
-                        npmi = self.npmi_cache[ij]
-                    except KeyError:
-                        col_i = self.bin_ref_counts[:, idx_i]
-                        col_j = self.bin_ref_counts[:, idx_j]
-                        c_i = col_i.sum()
-                        c_j = col_j.sum()
-                        if sparse.issparse(self.bin_ref_counts):
-                            c_ij = col_i.multiply(col_j).sum()
-                        else:
-                            c_ij = (col_i * col_j).sum()
-                        if c_ij == 0:
-                            npmi = 0.0
-                        else:
-                            npmi = (
-                                (np.log(num_docs) + np.log(c_ij) - np.log(c_i) - np.log(c_j)) 
-                                / (np.log(num_docs) - np.log(c_ij))
-                            )
-                        self.npmi_cache[ij] = npmi
-                    npmi_vals.append(npmi)
-            npmi_means.append(np.mean(npmi_vals))
-
-        return np.array(npmi_means)
 
 
-def compute_npmi(sorted_topics: np.ndarray, bin_ref_counts: np.ndarray, n: int = 10) -> np.ndarray:
-    """
-    Compute NPMI for an estimated beta (topic-word distribution) parameter using
-    binary co-occurence counts from a reference corpus
-    """
-    num_docs = bin_ref_counts.shape[0]
+@jax.partial(jit, static_argnums=(2,))
+def _compute_npmi_jax(sorted_topics: jnp.ndarray, bin_ref_counts: jnp.ndarray, n: int = 10) -> jnp.ndarray:
+    """jit-compatible version of compute_npmi"""
+    num_topics, _ = jnp.shape(sorted_topics)
+    num_docs, _ = jnp.shape(bin_ref_counts)
 
-    sorted_topics = sorted_topics[:, :n]
+    sorted_topics = lax.dynamic_slice_in_dim(sorted_topics, 0, n, axis=-1)
 
-    npmi_means = []
-    for indices in sorted_topics:
-        npmi_vals = []
-        for i, index1 in enumerate(indices):
-            for index2 in indices[i+1:n]:
-                col1 = bin_ref_counts[:, index1]
-                col2 = bin_ref_counts[:, index2]
+    def body_fn_topics(k, npmi_means):
+        """Loops over the k topics and fills in the `k`-length `npmi_means vector`"""
+        indices = jnp.take(sorted_topics, k, axis=0)
+
+        def body_fn_outer(i, npmi_vals_outer):
+            """Outer loop, `i` from 0 to `n`"""
+
+            def body_fn_inner(j, npmi_vals_inner):
+                """Inner loop, `j` from `i+1` to `n`, calculating PMI for each (i, j)"""
+                index1 = jnp.take(indices, i, axis=0)
+                index2 = jnp.take(indices, j, axis=0)
+                col1 = jnp.take(bin_ref_counts, index1, axis=1)
+                col2 = jnp.take(bin_ref_counts, index2, axis=1)
                 c1 = col1.sum()
                 c2 = col2.sum()
-                if sparse.issparse(bin_ref_counts):
-                    c12 = col1.multiply(col2).sum()
-                else:
-                    c12 = (col1 * col2).sum()
+                c12 = jnp.sum(col1 * col2)
+                npmi = lax.cond(
+                    c12 == 0,
+                    lambda x: 0.,
+                    lambda x: (
+                        (jnp.log(num_docs) + jnp.log(c12) - jnp.log(c1) - jnp.log(c2)) 
+                        / (jnp.log(num_docs) - jnp.log(c12))
+                    ),
+                    0.
+                )
+                prev_sum_inner, prev_count_inner = npmi_vals_inner
+                return prev_sum_inner + npmi, prev_count_inner + 1
+            # Run the inner index loop
+            return lax.fori_loop(i + 1, n, body_fn_inner, init_val=npmi_vals_outer)
 
-                if c12 == 0:
-                    npmi = 0.0
-                else:
-                    npmi = (
-                        (np.log(num_docs) + np.log(c12) - np.log(c1) - np.log(c2)) 
-                        / (np.log(num_docs) - np.log(c12))
-                    )
-                npmi_vals.append(npmi)
-        npmi_means.append(np.mean(npmi_vals))
+        # Run the outer index loop
+        npmi_sum, count = lax.fori_loop(0, n, body_fn_outer, init_val=(0., 0))
+        return jax.ops.index_update(npmi_means, k, npmi_sum / count)
 
-    return np.array(npmi_means)
-
-
-def compute_tu(topics, n=10):
-    """
-    Topic uniqueness measure from https://www.aclweb.org/anthology/P19-1640.pdf
-    """
-    tu_results = []
-    for topics_i in topics:
-        w_counts = 0
-        for w in topics_i[:n]:
-            w_counts += 1 / np.sum([w in topics_j[:n] for topics_j in topics]) # count(k, l)
-        tu_results.append((1 / n) * w_counts)
-    return tu_results
-
-
-def compute_tr(topics, n=10):
-    """
-    Compute topic redundancy score from 
-    https://jmlr.csail.mit.edu/papers/volume20/18-569/18-569.pdf
-    """
-    tr_results = []
-    k = len(topics)
-    for i, topics_i in enumerate(topics):
-        w_counts = 0
-        for w in topics_i[:n]:
-            w_counts += np.sum([w in topics_j[:n] for j, topics_j in enumerate(topics) if j != i]) # count(k, l)
-        tr_results.append((1 / (k - 1)) * w_counts)
-    return tr_results
-
-
-def compute_topic_exclusivity(beta, n=20):
-    """
-    Compute topic exclusivity, cited in https://arxiv.org/pdf/2010.12626.pdf
-    """
-    raise NotImplementedError()
-
-
-def compute_to(topics, n=10, multiplier=2, return_overlaps=False):
-    """
-    A sensible overlap / redundancy measure. Words from a topic
-    are only counted once per "edge"
-
-    Basic algorithm creates a de-duplicated adjacency matrix:
-    for each topic A_i, sorted by total number of overlaps:
-        create set of sets S = {S_{ij} = A_i \cap A_j st. j=i+1,...,k}
-        sort sets in S by their cardinality in descending order
-        initialize a set W = {}
-        For each S_{ij}' in S:
-            if words are not already part of an edge, i.e., |W \cap S_{ij}'| is 0:
-               create an edge between A_i and A_j with weight w = |S_{ij}'|
-               augment the list of words used in an edge, W = W \cup S_{ij}'
-    
-    Then, sum the number of edges, weighted by some function of that number
-    """
-    k = len(topics)
-    overlap_counts = np.zeros((k, k), dtype=int)
-    overlap_dedup = np.zeros((k, k), dtype=int)
-    overlap_words = {}
-
-    # first count all the overlaps between topics
-    for i, topic_i in enumerate(topics):
-        for j, topic_j in enumerate(topics[i+1:], start=i+1):
-            words_ij = set(topic_i[:n]) & set(topic_j[:n])
-            overlap_counts[[i, j], [j, i]] = len(words_ij)
-            overlap_words[frozenset([i, j])] = words_ij
-
-    # sort topics by those with most overlaps
-    sort_idx = overlap_counts.sum(0).argsort()[::-1]
-    overlap_counts = overlap_counts[sort_idx, :][:, sort_idx]
-    for i, counts in enumerate(overlap_counts):
-        counted_words = set()
-        start = i + 1
-        for j in (counts[start:].argsort()[::-1] + start):
-            words_ij = overlap_words[frozenset([i, j])]
-            if overlap_counts[i, j] > 0 and len(counted_words & words_ij) == 0:
-                overlap_dedup[i, j] = overlap_counts[i, j]
-                counted_words |= words_ij
-
-    # how many 1-word n-topic overlaps are equivalent to an n-word 1-topic overlap?
-    increments = np.linspace(1/multiplier, n, num=n)
-    redundancy = increments[overlap_dedup[overlap_dedup > 0] - 1].sum() / (n * (k - 1))
-    if return_overlaps:
-        redundancy = redundancy, overlap_dedup
-    return redundancy
+    # Run the topic loop
+    return lax.fori_loop(0, num_topics, body_fn_topics, init_val=jnp.zeros(num_topics))
