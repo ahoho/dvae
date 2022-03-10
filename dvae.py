@@ -58,6 +58,15 @@ class CollapsedMultinomial(dist.Multinomial):
         return ((self.probs + 1e-10).log() * value).sum(-1)
 
 
+class LinearSoftmax(nn.Linear):
+    """
+    Linear layer where the weights are first put through a softmax
+    """
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        # TODO: should we even allow a bias?
+        return F.linear(input, F.softmax(self.weight, dim=0), self.bias)
+
+
 class Encoder(nn.Module):
     """
     Module that parameterizes the dirichlet distribution q(z|x)
@@ -119,10 +128,14 @@ class Decoder(nn.Module):
         vocab_size: int,
         num_topics: int, 
         bias_term: bool = True,
+        softmax_beta: bool = False,
     ):
         super().__init__()
 
-        self.eta_layer = nn.Linear(num_topics, vocab_size, bias=bias_term)
+        if not softmax_beta:
+            self.eta_layer = nn.Linear(num_topics, vocab_size, bias=bias_term)
+        else:
+            self.eta_layer = LinearSoftmax(num_topics, vocab_size, bias=bias_term)
 
         # this matches NVDM / TF implementation, which does not use scale
         self.eta_bn_layer = nn.BatchNorm1d(
@@ -159,6 +172,7 @@ class DVAE(nn.Module):
         hidden_dim: int,
         dropout: float,
         bias_term: bool = True,
+        softmax_beta: bool = False,
         cuda: bool = True,
     ):
         super().__init__()
@@ -174,6 +188,7 @@ class DVAE(nn.Module):
             vocab_size=vocab_size,
             num_topics=num_topics,
             bias_term=bias_term,
+            softmax_beta=softmax_beta,
         )
 
         if cuda:
@@ -273,6 +288,8 @@ def run_dvae(
         encoder_hidden_dim: int = 0, # setting to 0 turns off the second layer
         dropout: float = 0.25, # TODO: separate for enc/dec
         alpha_prior: float = 0.01,
+        decoder_bias: bool = True,
+        softmax_beta: bool = False,
 
         learning_rate: float = 0.001,
         topic_word_regularization: Optional[float] = None, 
@@ -346,7 +363,8 @@ def run_dvae(
         embeddings_dim=encoder_embeddings_dim,
         hidden_dim=encoder_hidden_dim,
         dropout=dropout,
-        bias_term=True,
+        bias_term=decoder_bias,
+        softmax_beta=softmax_beta,
         cuda=gpu,
     )
 
