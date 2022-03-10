@@ -129,6 +129,7 @@ class Decoder(nn.Module):
         num_topics: int, 
         bias_term: bool = True,
         softmax_beta: bool = False,
+        beta_init: torch.tensor = None,
     ):
         super().__init__()
 
@@ -136,6 +137,9 @@ class Decoder(nn.Module):
             self.eta_layer = nn.Linear(num_topics, vocab_size, bias=bias_term)
         else:
             self.eta_layer = LinearSoftmax(num_topics, vocab_size, bias=bias_term)
+        
+        if beta_init is not None:
+            self.eta_layer.weight.data.copy_(beta_init.T)
 
         # this matches NVDM / TF implementation, which does not use scale
         self.eta_bn_layer = nn.BatchNorm1d(
@@ -173,6 +177,7 @@ class DVAE(nn.Module):
         dropout: float,
         bias_term: bool = True,
         softmax_beta: bool = False,
+        beta_init: torch.tensor = None,
         cuda: bool = True,
     ):
         super().__init__()
@@ -189,6 +194,7 @@ class DVAE(nn.Module):
             num_topics=num_topics,
             bias_term=bias_term,
             softmax_beta=softmax_beta,
+            beta_init=beta_init,
         )
 
         if cuda:
@@ -281,6 +287,10 @@ def run_dvae(
         train_path: Path = "train.dtm.npz",
         eval_path: Optional[Path] = "val.dtm.npz",
         vocab_path: Optional[Path] = "vocab.json",
+        
+        topic_word_init_path: Optional[Path] = None, # initialize the topic-word distribution
+        topic_word_prior_path: Optional[Path] = None, # use the topic-word distribution as a prior
+        # TODO: add priors for document-topics
         num_topics: Optional[int] = None,
         to_dense: bool = True,
 
@@ -339,6 +349,13 @@ def run_dvae(
 
     vocab_size = x_train.shape[1]
 
+    beta_init, beta_prior = None, None
+    if topic_word_init_path:
+        beta_init = torch.tensor(np.load(topic_word_init_path))
+    if topic_word_prior_path:
+        raise NotImplementedError("Need to implement topic-word prior (may involve ditching L1 regularization for laplacian?)")
+        beta_prior = torch.tensor(np.load(topic_word_prior_path))
+
     if eval_path is not None:
         x_val = load_sparse(eval_path).astype(np.float32)
         if not compute_eval_loss and not to_dense:
@@ -365,6 +382,7 @@ def run_dvae(
         dropout=dropout,
         bias_term=decoder_bias,
         softmax_beta=softmax_beta,
+        beta_init=beta_init,
         cuda=gpu,
     )
 

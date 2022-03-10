@@ -27,6 +27,8 @@ if __name__ == "__main__":
     parser.add("--train_path", default="train.dtm.npz")
     parser.add("--eval_path", default="val.dtm.npz")
     parser.add("--vocab_path", default="vocab.json")
+    parser.add("--topic_word_init_path", default=None)
+    parser.add("--topic_word_prior_path", default=None)
     parser.add("--to_dense", default=False, action="store_true")
     
     parser.add("--num_topics", default=None, type=int)
@@ -87,6 +89,8 @@ if __name__ == "__main__":
             train_path=args.train_path,
             eval_path=args.eval_path,
             vocab_path=args.vocab_path,
+            topic_word_init_path=args.topic_word_init_path,
+            topic_word_prior_path=args.topic_word_prior_path,
             num_topics=args.num_topics,
             to_dense=args.to_dense,
             encoder_embeddings_dim=args.encoder_embeddings_dim,
