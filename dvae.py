@@ -302,7 +302,7 @@ def run_dvae(
 
         eval_words: int = 10,
         topic_words_to_save: int = 50,
-        target_metric: str = "npmi",
+        target_metric: Optional[str] = None,
         compute_eval_loss: bool = False,
         max_acceptable_overlap: Optional[int] = None,
         eval_step: int = 1,
@@ -463,7 +463,7 @@ def run_dvae(
                 val_metrics['tu'] = max(curr_metrics['tu'], val_metrics['tu'])
                 val_metrics['to'] = min(curr_metrics['to'], val_metrics['to'])
 
-            if val_metrics[target_metric] == curr_metrics[target_metric]:
+            if target_metric is not None and val_metrics[target_metric] == curr_metrics[target_metric]:
                 pyro.get_param_store().save(Path(output_dir, "model.pt"))
                 save_topics(topic_terms, inv_vocab, Path(output_dir, "topics.txt"), n=topic_words_to_save)
 
@@ -487,6 +487,12 @@ def run_dvae(
             f"Best TU @ this NPMI: {results.tu[np.argmax(results.npmi)]:0.4f}\n"
             f"Best TO @ this NPMI: {results.to[np.argmax(results.npmi)]:0.4f}"
         )
+
+    # if target metric is not specified, then save the model at the end 
+    if target_metric is None:
+        topic_terms = np.flip(vae.decoder.beta.argsort(-1), -1)[:, :topic_words_to_save]
+        pyro.get_param_store().save(Path(output_dir, "model.pt"))
+        save_topics(topic_terms, inv_vocab, Path(output_dir, "topics.txt"), n=topic_words_to_save)
 
     return vae, results
 
