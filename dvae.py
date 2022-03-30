@@ -58,15 +58,6 @@ class CollapsedMultinomial(dist.Multinomial):
         return ((self.probs + 1e-10).log() * value).sum(-1)
 
 
-class LinearSoftmax(nn.Linear):
-    """
-    Linear layer where the weights are first put through a softmax
-    """
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        # TODO: should we even allow a bias?
-        return F.linear(input, F.softmax(self.weight, dim=0), self.bias)
-
-
 class Encoder(nn.Module):
     """
     Module that parameterizes the dirichlet distribution q(z|x)
@@ -126,20 +117,9 @@ class Decoder(nn.Module):
     def __init__(
         self,
         vocab_size: int,
-        num_topics: int, 
-        bias_term: bool = True,
-        softmax_beta: bool = False,
-        beta_init: torch.tensor = None,
+        num_topics: int,
     ):
         super().__init__()
-
-        if not softmax_beta:
-            self.eta_layer = nn.Linear(num_topics, vocab_size, bias=bias_term)
-        else:
-            self.eta_layer = LinearSoftmax(num_topics, vocab_size, bias=bias_term)
-        
-        if beta_init is not None:
-            self.eta_layer.weight.data.copy_(beta_init.T)
 
         # this matches NVDM / TF implementation, which does not use scale
         self.eta_bn_layer = nn.BatchNorm1d(
@@ -148,8 +128,8 @@ class Decoder(nn.Module):
         self.eta_bn_layer.weight.data.copy_(torch.ones(vocab_size))
         self.eta_bn_layer.weight.requires_grad = False
 
-    def forward(self, z: torch.tensor, bn_annealing_factor: float = 0.0) -> torch.tensor:
-        eta = self.eta_layer(z)
+    def forward(self, z: torch.tensor, topic_word: torch.tensor, bn_annealing_factor: float = 0.0) -> torch.tensor:
+        eta = F.linear(z, topic_word.T)
         eta_bn = self.eta_bn_layer(eta)
 
         x_recon = (
@@ -157,10 +137,6 @@ class Decoder(nn.Module):
             + (1 - bn_annealing_factor) * F.softmax(eta_bn, dim=-1)
         )
         return x_recon
-    
-    @property
-    def beta(self) -> np.ndarray:
-        return self.eta_layer.weight.T.cpu().detach().numpy()
 
 
 class DVAE(nn.Module):
@@ -172,12 +148,12 @@ class DVAE(nn.Module):
         vocab_size: int,
         num_topics: int,
         alpha_prior: float,
+        beta_prior: Union[torch.tensor, float],
         embeddings_dim: int,
         hidden_dim: int,
         dropout: float,
-        bias_term: bool = True,
-        softmax_beta: bool = False,
-        beta_init: torch.tensor = None,
+        beta_distribution: Optional[str] = "dirichlet",
+        beta_init: Optional[torch.tensor] = None,
         cuda: bool = True,
     ):
         super().__init__()
@@ -192,19 +168,35 @@ class DVAE(nn.Module):
         self.decoder = Decoder(
             vocab_size=vocab_size,
             num_topics=num_topics,
-            bias_term=bias_term,
-            softmax_beta=softmax_beta,
-            beta_init=beta_init,
         )
 
+        self.use_cuda = cuda
+        self.vocab_size = vocab_size
+        self.num_topics = num_topics
+        self.alpha_prior = alpha_prior
+
+        # beta setup
+        # initialize the variational parameter
+        self.beta_distribution = beta_distribution
+        if beta_init is not None:
+            self.beta_init = beta_init
+        else:
+            #self.beta_init = nn.init.kaiming_uniform_(torch.empty((num_topics, vocab_size)), a=np.sqrt(5))
+            self.beta_init = torch.rand((num_topics, vocab_size))
+    
+        # set the prior for beta
+        if isinstance(beta_prior, float):
+            self.beta_prior = torch.ones((num_topics, vocab_size)) * beta_prior
+        else:
+            self.beta_prior = beta_prior
+        
         if cuda:
             # calling cuda() here will put all the parameters of
             # the encoder and decoder networks into gpu memory
             self.cuda()
-        self.use_cuda = cuda
-        self.num_topics = num_topics
-        self.alpha_prior = alpha_prior
-
+            self.beta_prior = self.beta_prior.cuda()
+            self.beta_init = self.beta_init.cuda() # todo--declare as params?
+ 
     # define the model p(x|z)p(z)
     def model(
         self, x: torch.tensor,
@@ -213,6 +205,13 @@ class DVAE(nn.Module):
     ) -> torch.tensor:
         # register PyTorch module `decoder` with Pyro
         pyro.module("decoder", self.decoder)
+        if self.beta_distribution == "dirichlet":
+            with pyro.plate("topics", self.num_topics):
+                topic_word = pyro.sample("topic_word", dist.Dirichlet(self.beta_prior))
+        if self.beta_distribution == "laplace":
+            pass
+        if self.beta_distribution is None:
+            topic_word = pyro.param("beta_q", lambda: self.beta_init)
 
         with pyro.plate("data", x.shape[0]):
             # setup hyperparameters for prior p(z)
@@ -223,7 +222,7 @@ class DVAE(nn.Module):
             # sample from prior (value will be sampled by guide when computing the ELBO)
             z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
             # decode the latent code z
-            x_recon = self.decoder(z, bn_annealing_factor)
+            x_recon = self.decoder(z, topic_word, bn_annealing_factor)
             # score against actual data
             pyro.sample("obs", CollapsedMultinomial(1, probs=x_recon), obs=x)
 
@@ -237,12 +236,24 @@ class DVAE(nn.Module):
     ):
         # register PyTorch module `encoder` with Pyro
         pyro.module("encoder", self.encoder)
+        if self.beta_distribution == "dirichlet":
+            beta_q = pyro.param("beta_q", lambda: self.beta_init, constraint=dist.constraints.positive)
+            with pyro.plate("topics", self.num_topics):
+                pyro.sample("topic_word", dist.Dirichlet(beta_q))
+        if self.beta_distribution == "laplace":
+            pass
+
+        
         with pyro.plate("data", x.shape[0]):
             # use the encoder to get the parameters used to define q(z|x)
             z = self.encoder(x)
             # sample the latent code z
             with pyro.poutine.scale(None, kl_annealing_factor):
                 pyro.sample("doc_topics", dist.Dirichlet(z))
+    
+    @property
+    def beta(self) -> np.ndarray:
+        return pyro.param("beta_q").cpu().detach().numpy()
 
 
 def calculate_annealing_factor(
@@ -298,11 +309,9 @@ def run_dvae(
         encoder_hidden_dim: int = 0, # setting to 0 turns off the second layer
         dropout: float = 0.25, # TODO: separate for enc/dec
         alpha_prior: float = 0.01,
-        decoder_bias: bool = True,
-        softmax_beta: bool = False,
+        beta_prior: float = 1.0,
 
         learning_rate: float = 0.001,
-        topic_word_regularization: Optional[float] = None, 
         adam_beta_1: float = 0.9,
         adam_beta_2: float = 0.999,
         batch_size: int = 200,
@@ -349,11 +358,10 @@ def run_dvae(
 
     vocab_size = x_train.shape[1]
 
-    beta_init, beta_prior = None, None
+    beta_init = None
     if topic_word_init_path:
         beta_init = torch.tensor(np.load(topic_word_init_path))
     if topic_word_prior_path:
-        raise NotImplementedError("Need to implement topic-word prior (may involve ditching L1 regularization for laplacian?)")
         beta_prior = torch.tensor(np.load(topic_word_prior_path))
 
     if eval_path is not None:
@@ -377,11 +385,10 @@ def run_dvae(
         vocab_size=vocab_size,
         num_topics=num_topics,
         alpha_prior=alpha_prior,
+        beta_prior=beta_prior,
         embeddings_dim=encoder_embeddings_dim,
         hidden_dim=encoder_hidden_dim,
         dropout=dropout,
-        bias_term=decoder_bias,
-        softmax_beta=softmax_beta,
         beta_init=beta_init,
         cuda=gpu,
     )
@@ -395,11 +402,6 @@ def run_dvae(
 
     # setup the inference algorithm
     elbo = TraceMeanField_ELBO()
-    if topic_word_regularization:
-        elbo = L1RegularizedTraceMeanField_ELBO(
-            l1_params=["decoder$$$eta_layer.weight", "decoder$$$eta_layer.bias"],
-            l1_weight=topic_word_regularization
-        )
     svi = SVI(vae.model, vae.guide, optimizer, loss=elbo)
 
     train_elbo = []
@@ -459,7 +461,7 @@ def run_dvae(
                 val_loss /= n_val
 
             # get beta and topic terms
-            beta = vae.decoder.beta
+            beta = vae.beta
             topic_terms = np.flip(beta.argsort(-1), -1)[:, :topic_words_to_save]
 
             # compute topic-uniqueness & topic overlap

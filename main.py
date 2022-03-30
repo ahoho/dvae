@@ -37,9 +37,7 @@ if __name__ == "__main__":
     parser.add("--encoder_hidden_dim", default=0, type=int)
     parser.add("--dropout", default=0.25, type=float)
     parser.add("--alpha_prior", default=0.01, type=float)
-    parser.add("--decoder_bias", default=True, action="store_true")
-    parser.add("--no_decoder_bias", dest="decoder_bias", action="store_false")
-    parser.add("--softmax_beta", default=False, action="store_true")
+    parser.add("--beta_prior", default=1.0, type=float)
 
     parser.add('--learning_rate', default=0.001, type=float)
     parser.add('--topic_word_regularization', default=None, type=float)
@@ -97,10 +95,8 @@ if __name__ == "__main__":
             encoder_hidden_dim=args.encoder_hidden_dim,
             dropout=args.dropout,
             alpha_prior=args.alpha_prior,
-            decoder_bias=args.decoder_bias,
-            softmax_beta=args.softmax_beta,
+            beta_prior=args.beta_prior,
             learning_rate=args.learning_rate,
-            topic_word_regularization=args.topic_word_regularization,
             adam_beta_1=args.adam_beta_1,
             adam_beta_2=args.adam_beta_2,
             batch_size=args.batch_size,
