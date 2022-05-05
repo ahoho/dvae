@@ -1,0 +1,27 @@
+adam_beta_1: 0.9
+adam_beta_2: 0.999
+alpha_prior: 0.001
+beta_prior: 0.01
+batch_size: 200
+compute_eval_loss: false
+dropout: 0.25
+encoder_embeddings_dim: 100
+encoder_hidden_dim: 0
+epochs_to_anneal_bn: 1
+epochs_to_anneal_kl: 100
+eval_path: train.dtm.npz
+eval_step: 2
+eval_words: 10
+gpu: true
+input_dir: /workspace/topic-preprocessing/data/url_partisanship_data/processed/soup-nuts
+learning_rate: 0.001
+max_acceptable_overlap: null
+num_epochs: 250
+num_topics: 50
+run_seeds: 5591
+target_metric: null
+to_dense: false
+# topic_word_init_path: /workspace/topic-preprocessing/runs/outputs/url_partisanship_data/k-50/mallet/alpha_5.0-beta_0.05-iter_2000-opt_10/42/beta.npy
+topic_words_to_save: 50
+train_path: train.dtm.npz
+vocab_path: vocab.json
