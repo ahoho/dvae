@@ -19,9 +19,8 @@ def load_yaml(path):
 
 def retrieve_estimates(model_dir, eval_data=None, **kwargs): 
     """
-    Loads the dvae model and the topic-word distribution,
-    then instantiates the encoder portion and does a forward pass to get the
-    training-set document-topic estimates
+    Loads the dvae model then instantiates the encoder portion
+    and does a forward pass to get the training-set document-topic estimates
 
     If `eval_data` is provided, will infer new document-topic estimates for the data
     and the topic-word estimates will __not__ be returned
@@ -31,7 +30,7 @@ def retrieve_estimates(model_dir, eval_data=None, **kwargs):
     device = torch.device("cuda") if _CUDA_AVAILABLE else torch.device("cpu")
 
     if eval_data is None:
-        data = load_sparse(Path(config["input_dir"], "train.dtm.npz"))
+        data = load_sparse(Path(config["input_dir"], "train.dtm.npz")).astype(np.float32)
     else:
         data = eval_data
     
@@ -61,7 +60,7 @@ def retrieve_estimates(model_dir, eval_data=None, **kwargs):
 
     if eval_data is None:
         beta = state_dict["params"]["decoder$$$eta_layer.weight"]
-        return torch.transpose(beta, 0, 1).detach().numpy(), doc_topic
+        return torch.transpose(beta, 0, 1).detach().cpu().numpy(), doc_topic
     else:
         return doc_topic
 
@@ -79,6 +78,7 @@ def retrieve_doc_topic(dvae, data, device, batch_size=200):
     for i, x_batch in tqdm(enumerate(data_iterator(data, batch_size, train_batches)), total=train_batches):
         x_batch = x_batch.to(device)
         doc_topic_batch = dvae.encoder(x_batch)
+        # this is the mean of the dirichlet given params
         doc_topic_batch = doc_topic_batch / doc_topic_batch.sum(1, keepdims=True)
 
         if doc_topic is None: # initialize
@@ -95,8 +95,14 @@ if __name__ == "__main__":
     parser.add_argument("--output_fpath")
     args = parser.parse_args()
 
-    eval_data = load_sparse(args.inference_data_file).astype(np.float32)
-    doc_topic = retrieve_estimates(args.model_dir, eval_data)
-    Path(args.output_fpath).parent.mkdir(exist_ok=True, parents=True)
-    np.save(args.output_fpath, doc_topic)
-
+    assert Path(args.model_dir, "model.pt").exists(), f"Model does not exist at {args.model_dir}/model.py"
+    
+    if args.inference_data_file is not None:
+        eval_data = load_sparse(args.inference_data_file).astype(np.float32)
+        doc_topic = retrieve_estimates(args.model_dir, eval_data)
+        Path(args.output_fpath).parent.mkdir(exist_ok=True, parents=True)
+        np.save(args.output_fpath, doc_topic)
+    else:
+        topic_word, doc_topic = retrieve_estimates(args.model_dir, None)
+        np.save(Path(args.model_dir, "beta.npy"), topic_word)
+        np.save(Path(args.model_dir, "train.theta.npy"), doc_topic)
