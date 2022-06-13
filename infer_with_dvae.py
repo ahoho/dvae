@@ -1,7 +1,7 @@
-import yaml
 import argparse
 from pathlib import Path
 
+import yaml
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -17,22 +17,22 @@ def load_yaml(path):
         return yaml.load(infile, Loader=yaml.FullLoader)
 
 
-def retrieve_estimates(model_dir, eval_data=None, **kwargs): 
+def retrieve_estimates(model_dir, eval_data_fpath=None, **kwargs): 
     """
     Loads the dvae model then instantiates the encoder portion
     and does a forward pass to get the training-set document-topic estimates
 
-    If `eval_data` is provided, will infer new document-topic estimates for the data
+    If `eval_data_fpath` is provided, will infer new document-topic estimates for the data
     and the topic-word estimates will __not__ be returned
     """
     model_dir = Path(model_dir)
     config = load_yaml(model_dir / "config.yml")
     device = torch.device("cuda") if _CUDA_AVAILABLE else torch.device("cpu")
 
-    if eval_data is None:
-        data = load_sparse(Path(config["input_dir"], "train.dtm.npz")).astype(np.float32)
+    if eval_data_fpath is None:
+        eval_data = load_sparse(Path(config["input_dir"], "train.dtm.npz")).astype(np.float32)
     else:
-        data = eval_data
+        eval_data = load_sparse(eval_data_fpath).astype(np.float32)
     
     state_dict = torch.load(model_dir / "model.pt", map_location=device)
 
@@ -56,9 +56,9 @@ def retrieve_estimates(model_dir, eval_data=None, **kwargs):
 
     # then load the data for the forward pass
     batch_size = config["batch_size"]
-    doc_topic = retrieve_doc_topic(dvae, data, device, batch_size)
+    doc_topic = retrieve_doc_topic(dvae, eval_data, device, batch_size)
 
-    if eval_data is None:
+    if eval_data_fpath is None:
         beta = state_dict["params"]["decoder$$$eta_layer.weight"]
         return torch.transpose(beta, 0, 1).detach().cpu().numpy(), doc_topic
     else:
@@ -98,8 +98,7 @@ if __name__ == "__main__":
     assert Path(args.model_dir, "model.pt").exists(), f"Model does not exist at {args.model_dir}/model.py"
     
     if args.inference_data_file is not None:
-        eval_data = load_sparse(args.inference_data_file).astype(np.float32)
-        doc_topic = retrieve_estimates(args.model_dir, eval_data)
+        doc_topic = retrieve_estimates(args.model_dir, args.inference_data_file)
         Path(args.output_fpath).parent.mkdir(exist_ok=True, parents=True)
         np.save(args.output_fpath, doc_topic)
     else:
