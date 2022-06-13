@@ -53,7 +53,7 @@ if __name__ == "__main__":
     
     parser.add("--eval_words", default=10, type=int)
     parser.add("--topic_words_to_save", default=50, type=int)
-    parser.add("--target_metric", default="npmi", choices=["npmi", "loss", "tu"])
+    parser.add("--target_metric", default=None, choices=["npmi", "loss", "tu"])
     parser.add("--compute_eval_loss", default=False, action="store_true")
     parser.add("--max_acceptable_overlap", type=int, default=None)
     parser.add("--eval_step", default=1, type=int)
